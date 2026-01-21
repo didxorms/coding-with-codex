@@ -1,4 +1,5 @@
 gymnasium[classic-control]==0.29.1
+imageio==2.34.1
 matplotlib==3.8.4
 numpy==1.26.4
 torch==2.2.2

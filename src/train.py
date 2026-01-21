@@ -4,9 +4,10 @@ import argparse
 from collections import deque
 from datetime import datetime
 from pathlib import Path
-from typing import Deque, Tuple
+from typing import Deque, List
 
 import gymnasium as gym
+import imageio.v3 as imageio
 import numpy as np
 import torch
 from torch import nn, optim
@@ -105,6 +106,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--epsilon-decay", type=float, default=200.0)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--run-dir", type=Path, default=None)
+    parser.add_argument("--save-best", action="store_true")
+    parser.add_argument("--record-gif", action="store_true")
+    parser.add_argument("--gif-episodes", type=int, default=1)
     return parser.parse_args()
 
 
@@ -132,6 +136,11 @@ def main() -> None:
     run_dir.mkdir(parents=True, exist_ok=True)
 
     rewards_history: Deque[float] = deque(maxlen=args.episodes)
+    avg_rewards: List[float] = []
+    epsilons: List[float] = []
+    losses: List[float] = []
+    best_avg_reward = -float("inf")
+    best_checkpoint_path = run_dir / "best_checkpoint.pt"
     for episode in range(1, args.episodes + 1):
         state, _ = env.reset(seed=args.seed + episode)
         episode_reward = 0.0
@@ -142,6 +151,7 @@ def main() -> None:
             args.epsilon_decay,
         )
 
+        episode_losses: List[float] = []
         for _ in range(args.max_steps):
             action = select_action(q_net, state, epsilon, num_actions, device)
             next_state, reward, terminated, truncated, _ = env.step(action)
@@ -158,7 +168,7 @@ def main() -> None:
             episode_reward += reward
             state = next_state
 
-            optimize(
+            loss_value = optimize(
                 q_net,
                 target_net,
                 optimizer,
@@ -167,6 +177,8 @@ def main() -> None:
                 args.gamma,
                 device,
             )
+            if loss_value:
+                episode_losses.append(loss_value)
 
             if done:
                 break
@@ -176,7 +188,13 @@ def main() -> None:
         if episode % args.target_update == 0:
             target_net.load_state_dict(q_net.state_dict())
 
-        avg_reward = np.mean(list(rewards_history)[-10:])
+        avg_reward = float(np.mean(list(rewards_history)[-10:]))
+        avg_rewards.append(avg_reward)
+        epsilons.append(float(epsilon))
+        losses.append(float(np.mean(episode_losses)) if episode_losses else 0.0)
+        if args.save_best and avg_reward > best_avg_reward:
+            best_avg_reward = avg_reward
+            torch.save(q_net.state_dict(), best_checkpoint_path)
         print(
             f"Episode {episode:4d} | "
             f"Reward: {episode_reward:6.1f} | "
@@ -187,10 +205,60 @@ def main() -> None:
     env.close()
 
     metrics_path = run_dir / "metrics.csv"
-    write_metrics_csv(metrics_path, rewards_history)
+    write_metrics_csv(metrics_path, list(rewards_history), epsilons, avg_rewards, losses)
     plot_rewards(run_dir / "reward_plot.png", rewards_history)
     torch.save(q_net.state_dict(), run_dir / "checkpoint.pt")
+    if args.save_best and best_checkpoint_path.exists():
+        print(f"Best checkpoint saved to {best_checkpoint_path}")
+    if args.record_gif:
+        record_gif(
+            run_dir=run_dir,
+            checkpoint_path=best_checkpoint_path
+            if best_checkpoint_path.exists()
+            else run_dir / "checkpoint.pt",
+            episodes=args.gif_episodes,
+            seed=args.seed,
+        )
     print(f"Saved outputs to {run_dir}")
+
+
+def record_gif(
+    run_dir: Path,
+    checkpoint_path: Path,
+    episodes: int,
+    seed: int,
+) -> None:
+    env = gym.make("CartPole-v1", render_mode="rgb_array")
+    obs_size = env.observation_space.shape[0]
+    num_actions = env.action_space.n
+    device = torch.device("cpu")
+
+    q_net = DQN(obs_size, num_actions).to(device)
+    q_net.load_state_dict(torch.load(checkpoint_path, map_location=device))
+    q_net.eval()
+
+    frames = []
+    for episode in range(episodes):
+        state, _ = env.reset(seed=seed + episode)
+        done = False
+        while not done:
+            frame = env.render()
+            if frame is not None:
+                frames.append(frame)
+            with torch.no_grad():
+                state_tensor = torch.tensor(
+                    state,
+                    dtype=torch.float32,
+                    device=device,
+                ).unsqueeze(0)
+                action = int(torch.argmax(q_net(state_tensor), dim=1).item())
+            state, _, terminated, truncated, _ = env.step(action)
+            done = terminated or truncated
+
+    env.close()
+    gif_path = run_dir / "best_agent.gif"
+    imageio.imwrite(gif_path, frames, duration=0.02, loop=0)
+    print(f"Saved GIF to {gif_path}")
 
 
 if __name__ == "__main__":

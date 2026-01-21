@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import csv
 from pathlib import Path
-from typing import Iterable, Tuple
+from typing import Iterable, Sequence
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -14,13 +14,27 @@ def set_seed(seed: int) -> None:
     torch.manual_seed(seed)
 
 
-def write_metrics_csv(path: Path, rewards: Iterable[float]) -> None:
+def write_metrics_csv(
+    path: Path,
+    rewards: Sequence[float],
+    epsilons: Sequence[float],
+    avg_rewards: Sequence[float],
+    losses: Sequence[float],
+) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.writer(handle)
-        writer.writerow(["episode", "reward"])
+        writer.writerow(["episode", "reward", "avg_reward_10", "epsilon", "loss"])
         for idx, reward in enumerate(rewards, start=1):
-            writer.writerow([idx, reward])
+            writer.writerow(
+                [
+                    idx,
+                    reward,
+                    avg_rewards[idx - 1],
+                    epsilons[idx - 1],
+                    losses[idx - 1],
+                ]
+            )
 
 
 def plot_rewards(path: Path, rewards: Iterable[float], window: int = 10) -> None:
